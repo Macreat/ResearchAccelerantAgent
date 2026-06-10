@@ -1,0 +1,6 @@
+- deep context on the .tex generation file
+
+- enable api as service on linux OS 
+
+- track API/service port and sync to tailscale 
+

@@ -31,7 +31,7 @@ export default function Home() {
   const [yearFrom, setYearFrom] = useState(2023)
   const [yearTo, setYearTo] = useState(2026)
   const [citationMin, setCitationMin] = useState(1)
-  const [databases, setDatabases] = useState(['semantic_scholar', 'openalex'])
+  const [databases, setDatabases] = useState(['google_scholar', 'semantic_scholar', 'openalex'])
   const [bibFormat, setBibFormat] = useState<'APA' | 'MLA' | 'Chicago' | 'IEEE' | 'BibTeX'>('APA')
   const [version, setVersion] = useState<'mvp' | 'v2' | 'v3'>('v3')
   const [inclusionCriteria, setInclusionCriteria] = useState('')
@@ -235,7 +235,19 @@ export default function Home() {
               <Database className="w-3.5 h-3.5 text-blue-500" />
               Databases
             </Label>
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
+              <label className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white cursor-pointer hover:border-blue-300 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={databases.includes('google_scholar')}
+                  onChange={(e) => {
+                    if (e.target.checked) setDatabases([...databases, 'google_scholar'])
+                    else setDatabases(databases.filter((d) => d !== 'google_scholar'))
+                  }}
+                  className="rounded text-blue-600"
+                />
+                <span className="text-sm text-slate-700 font-medium">Google Scholar (SerpAPI)</span>
+              </label>
               <label className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white cursor-pointer hover:border-blue-300 transition-colors">
                 <input
                   type="checkbox"

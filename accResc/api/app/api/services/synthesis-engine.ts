@@ -6,6 +6,7 @@
 
 import type { PaperMetadata } from "./academic-search";
 import type { SynthesisData, ProblemStatementData } from "./latex-generator";
+import { askQuestionAboutPDF, processPDFForAnalysis } from "./pdf-extraction";
 
 // ============================================================================
 // Rule-Based Methodology Classifier
@@ -206,4 +207,102 @@ export async function draftProblemStatement(
 
     fullStatement: `Despite advances in understanding ${topic}, a critical gap remains: ${selectedGap.toLowerCase()}. This is problematic because current evidence is insufficient to guide effective practice across diverse contexts. The proposed study addresses this gap by conducting rigorous, contextually grounded research that will produce generalizable findings and actionable recommendations for stakeholders in the field.`,
   };
+}
+
+// ============================================================================
+// Paper Content Analysis & Q&A
+// ============================================================================
+export async function answerQuestionAboutPaper(
+  paper: PaperMetadata,
+  question: string
+): Promise<{
+  paperId: string;
+  paperTitle: string;
+  question: string;
+  answer: string;
+  confidence: number;
+  success: boolean;
+}> {
+  if (!paper.pdfUrl) {
+    return {
+      paperId: paper.externalId,
+      paperTitle: paper.title,
+      question,
+      answer: `No PDF available for "${paper.title}". Only abstract available: ${paper.abstract || "No abstract"}`,
+      confidence: 0,
+      success: false,
+    };
+  }
+
+  try {
+    const result = await askQuestionAboutPDF(paper.pdfUrl, question);
+    return {
+      paperId: paper.externalId,
+      paperTitle: paper.title,
+      question: result.question,
+      answer: result.answer,
+      confidence: result.confidence,
+      success: true,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return {
+      paperId: paper.externalId,
+      paperTitle: paper.title,
+      question,
+      answer: `Failed to analyze PDF: ${message}`,
+      confidence: 0,
+      success: false,
+    };
+  }
+}
+
+export async function extractPaperContent(
+  paper: PaperMetadata
+): Promise<{
+  paperId: string;
+  paperTitle: string;
+  contentExtracted: boolean;
+  summary?: string;
+  keyFindings?: string[];
+  totalPages?: number;
+  error?: string;
+}> {
+  if (!paper.pdfUrl) {
+    return {
+      paperId: paper.externalId,
+      paperTitle: paper.title,
+      contentExtracted: false,
+      error: "No PDF URL available",
+    };
+  }
+
+  try {
+    const result = await processPDFForAnalysis(paper.pdfUrl, paper.title);
+    if (result.success) {
+      return {
+        paperId: paper.externalId,
+        paperTitle: paper.title,
+        contentExtracted: true,
+        summary: result.contentSummary,
+        keyFindings: result.keyFindings,
+        totalPages: result.totalPages,
+      };
+    } else {
+      return {
+        paperId: paper.externalId,
+        paperTitle: paper.title,
+        contentExtracted: false,
+        error: result.error || "Failed to extract PDF content",
+      };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return {
+      paperId: paper.externalId,
+      paperTitle: paper.title,
+      contentExtracted: false,
+      error: message,
+    };
+  }
 }

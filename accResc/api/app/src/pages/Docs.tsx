@@ -7,7 +7,19 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
-import { CheckCircle2, FileText, Loader2, MessageSquare, RefreshCw, Search, Server, XCircle } from 'lucide-react'
+import { 
+  CheckCircle2, 
+  FileText, 
+  Loader2, 
+  MessageSquare, 
+  RefreshCw, 
+  Search, 
+  Server, 
+  XCircle,
+  Download,
+  Zap,
+  FileType,
+} from 'lucide-react'
 
 type ChatMessage = {
   role: 'user' | 'agent'
@@ -21,24 +33,39 @@ export default function Docs() {
   const [question, setQuestion] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
 
+  const [isDeepMode, setIsDeepMode] = useState(false)
+
   const utils = trpc.useUtils()
   const health = trpc.docs.health.useQuery(undefined, { refetchInterval: 10000 })
   const docs = trpc.docs.search.useQuery({ query })
   const artifacts = trpc.docs.artifacts.useQuery()
+  
   const scan = trpc.docs.scan.useMutation({
     onSuccess: async (result) => {
-      toast.success(`Indexed ${result.indexed} local PDF documents`)
+      toast.success(`Indexed ${result.indexed} local documents`)
       await utils.docs.search.invalidate()
       await utils.docs.health.invalidate()
     },
     onError: (error) => toast.error(error.message),
   })
+
   const ask = trpc.docs.ask.useMutation({
     onSuccess: (result) => {
       setMessages((current) => [...current, { role: 'agent', content: result.answer }])
     },
     onError: (error) => toast.error(error.message),
   })
+
+  const deepAsk = trpc.docs.deepAsk.useMutation({
+    onSuccess: (result) => {
+      setMessages((current) => [...current, { 
+        role: 'agent', 
+        content: `[Deep Analysis of ${result.document.title}]\n\n${result.answer}` 
+      }])
+    },
+    onError: (error) => toast.error(error.message),
+  })
+
   const generateTex = trpc.docs.generateTex.useMutation({
     onSuccess: async () => {
       toast.success('Generated LaTeX report')
@@ -46,10 +73,45 @@ export default function Docs() {
     },
     onError: (error) => toast.error(error.message),
   })
+
   const compilePdf = trpc.docs.compilePdf.useMutation({
     onSuccess: async () => {
       toast.success('Compiled PDF report')
       await utils.docs.artifacts.invalidate()
+    },
+    onError: (error) => toast.error(error.message),
+  })
+
+  const compileLocalTex = trpc.docs.compileLocalTex.useMutation({
+    onSuccess: async () => {
+      toast.success('Compiled TeX to PDF')
+      await utils.docs.artifacts.invalidate()
+    },
+    onError: (error) => toast.error(error.message),
+  })
+
+  const downloadPdf = trpc.docs.downloadPdf.useMutation({
+    onSuccess: (result) => {
+      const link = document.createElement('a')
+      link.href = `data:application/pdf;base64,${result.data}`
+      link.download = result.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Download started')
+    },
+    onError: (error) => toast.error(error.message),
+  })
+
+  const downloadTex = trpc.docs.downloadTex.useMutation({
+    onSuccess: (result) => {
+      const link = document.createElement('a')
+      link.href = `data:text/x-tex;base64,${result.data}`
+      link.download = result.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Download started')
     },
     onError: (error) => toast.error(error.message),
   })
@@ -71,10 +133,26 @@ export default function Docs() {
   const submitQuestion = async () => {
     const clean = question.trim()
     if (!clean) return
-    setMessages((current) => [...current, { role: 'user', content: clean }])
-    setQuestion('')
-    await ask.mutateAsync({ question: clean })
+
+    if (isDeepMode) {
+      if (selected.length === 0) {
+        toast.error('Select at least one document in the index for Deep Research')
+        return
+      }
+      setMessages((current) => [...current, { role: 'user', content: `[Deep] ${clean}` }])
+      setQuestion('')
+      await deepAsk.mutateAsync({ 
+        documentId: selected[0], 
+        question: clean 
+      })
+    } else {
+      setMessages((current) => [...current, { role: 'user', content: clean }])
+      setQuestion('')
+      await ask.mutateAsync({ question: clean })
+    }
   }
+
+  const isPending = ask.isPending || deepAsk.isPending
 
   const runGenerateTex = async () => {
     if (selected.length === 0) {
@@ -99,7 +177,7 @@ export default function Docs() {
         <StatusCard label="Ollama" ok={health.data?.ollamaReady} detail={health.data?.ollamaUrl} />
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Indexed PDFs</CardTitle>
+            <CardTitle className="text-sm">Indexed Documents</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold">{health.data?.indexedDocuments ?? 0}</div>
@@ -114,13 +192,13 @@ export default function Docs() {
               <Server className="h-5 w-5 text-blue-600" />
               Document Index
             </CardTitle>
-            <CardDescription>The proof workflow reads PDFs from the configured DOCS_DIR mount.</CardDescription>
+            <CardDescription>The proof workflow reads PDFs and TeX files from the configured DOCS_DIR mount.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-col gap-3 md:flex-row">
               <Button onClick={() => scan.mutate()} disabled={scan.isPending}>
                 {scan.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                Scan PDFs
+                Scan Documents
               </Button>
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -137,24 +215,72 @@ export default function Docs() {
               {docs.isLoading ? (
                 <div className="p-6 text-sm text-slate-500">Loading indexed documents...</div>
               ) : documents.length === 0 ? (
-                <div className="p-6 text-sm text-slate-500">No indexed PDFs yet. Run a scan first.</div>
+                <div className="p-6 text-sm text-slate-500">No indexed documents yet. Run a scan first.</div>
               ) : (
                 <div className="max-h-[520px] divide-y divide-slate-100 overflow-auto">
                   {documents.map((doc) => (
-                    <button
+                    <div
                       key={doc.sha256}
-                      onClick={() => toggleDoc(doc.sha256)}
-                      className="flex w-full items-start gap-3 p-4 text-left hover:bg-slate-50"
+                      className="group flex w-full items-start gap-3 p-4 text-left hover:bg-slate-50"
                     >
-                      <input type="checkbox" checked={selected.includes(doc.sha256)} readOnly className="mt-1" />
-                      <FileText className="mt-0.5 h-5 w-5 text-blue-600" />
+                      <input 
+                        type="checkbox" 
+                        checked={selected.includes(doc.sha256)} 
+                        onChange={() => toggleDoc(doc.sha256)}
+                        className="mt-1 cursor-pointer" 
+                      />
+                      {doc.type === 'tex' ? (
+                        <FileType className="mt-0.5 h-5 w-5 text-amber-600" />
+                      ) : (
+                        <FileText className="mt-0.5 h-5 w-5 text-blue-600" />
+                      )}
                       <div className="min-w-0 flex-1">
                         <div className="font-medium text-slate-800">{doc.title}</div>
                         <div className="truncate text-xs text-slate-500">{doc.relativePath}</div>
                         <div className="mt-1 text-xs text-slate-400">{doc.sizeBytes.toLocaleString()} bytes</div>
                       </div>
-                      <Badge variant="outline">PDF</Badge>
-                    </button>
+                      <div className="flex flex-col items-end gap-2">
+                        <Badge variant={doc.type === 'tex' ? 'secondary' : 'outline'} className={doc.type === 'tex' ? 'bg-amber-100 text-amber-800 border-amber-200' : ''}>
+                          {doc.type.toUpperCase()}
+                        </Badge>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {doc.type === 'tex' && (
+                            <Button 
+                              size="icon" 
+                              variant="ghost" 
+                              className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                              title="Compile to PDF"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                compileLocalTex.mutate({ sha256: doc.sha256 })
+                              }}
+                              disabled={compileLocalTex.isPending}
+                            >
+                              {compileLocalTex.isPending && compileLocalTex.variables?.sha256 === doc.sha256 ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Zap className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          )}
+                          {doc.type === 'tex' && (
+                            <Button 
+                              size="icon" 
+                              variant="ghost" 
+                              className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                              title="Download .tex"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                downloadTex.mutate({ sha256: doc.sha256 })
+                              }}
+                              disabled={downloadTex.isPending}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -197,8 +323,20 @@ export default function Docs() {
               placeholder="Ask about local documents, standards, reports, or generated outputs"
               className="min-h-[90px]"
             />
-            <Button onClick={submitQuestion} disabled={ask.isPending || !question.trim()} className="w-full">
-              {ask.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <div className="flex items-center space-x-2 py-1">
+              <input 
+                type="checkbox" 
+                id="deepMode" 
+                checked={isDeepMode} 
+                onChange={(e) => setIsDeepMode(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+              />
+              <label htmlFor="deepMode" className="text-sm font-medium text-slate-700 cursor-pointer">
+                Deep Research Mode (Full PDF Extraction)
+              </label>
+            </div>
+            <Button onClick={submitQuestion} disabled={isPending || !question.trim()} className="w-full">
+              {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Send to Agent
             </Button>
           </CardContent>
@@ -208,7 +346,7 @@ export default function Docs() {
       <Card>
         <CardHeader>
           <CardTitle>Generate Report</CardTitle>
-          <CardDescription>Selected PDFs are converted into a local .tex report. PDF compilation requires pdflatex.</CardDescription>
+          <CardDescription>Selected documents are converted into a local .tex report. PDF compilation requires pdflatex.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
@@ -231,9 +369,40 @@ export default function Docs() {
                     <div className="text-xs text-slate-500">{artifact.texPath}</div>
                     {artifact.pdfPath && <div className="text-xs text-emerald-600">{artifact.pdfPath}</div>}
                   </div>
-                  <Button variant="outline" onClick={() => compilePdf.mutate({ artifactId: artifact.id })} disabled={compilePdf.isPending}>
-                    Compile PDF
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => compilePdf.mutate({ artifactId: artifact.id })} 
+                      disabled={compilePdf.isPending}
+                    >
+                      {compilePdf.isPending && artifact.id === compilePdf.variables?.artifactId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      <Zap className="w-3.5 h-3.5 mr-2" />
+                      Compile PDF
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => downloadTex.mutate({ artifactId: artifact.id })} 
+                      disabled={downloadTex.isPending}
+                    >
+                      {downloadTex.isPending && artifact.id === downloadTex.variables?.artifactId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      <FileType className="w-3.5 h-3.5 mr-2" />
+                      Download .tex
+                    </Button>
+                    {artifact.pdfPath && (
+                      <Button 
+                        variant="secondary" 
+                        size="sm"
+                        onClick={() => downloadPdf.mutate({ artifactId: artifact.id })} 
+                        disabled={downloadPdf.isPending}
+                      >
+                        {downloadPdf.isPending && artifact.id === downloadPdf.variables?.artifactId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        <Download className="w-3.5 h-3.5 mr-2" />
+                        Download PDF
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))
             )}
@@ -259,3 +428,4 @@ function StatusCard({ label, ok, detail }: { label: string; ok?: boolean; detail
     </Card>
   )
 }
+

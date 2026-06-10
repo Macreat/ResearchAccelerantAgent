@@ -5,6 +5,7 @@ import fsp from "fs/promises";
 import path from "path";
 import { promisify } from "util";
 import { env } from "../lib/env";
+import { extractPDFText, analyzePDFContentWithLLM } from "./pdf-extraction";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,6 +19,7 @@ export interface LocalDocument {
   title: string;
   snippet: string;
   indexedAt: Date;
+  type: 'pdf' | 'tex';
 }
 
 export interface GeneratedArtifact {
@@ -46,8 +48,11 @@ async function walk(dir: string): Promise<string[]> {
     const next = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...await walk(next));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".pdf")) {
-      files.push(next);
+    } else if (entry.isFile()) {
+      const ext = entry.name.toLowerCase();
+      if (ext.endsWith(".pdf") || ext.endsWith(".tex")) {
+        files.push(next);
+      }
     }
   }
   return files;
@@ -103,30 +108,35 @@ export async function health() {
 
 export async function scanDocuments() {
   const docsDir = resolveDocsDir();
-  const pdfs = await walk(docsDir);
+  const files = await walk(docsDir);
   let changed = 0;
 
-  for (const pdfPath of pdfs) {
-    const stat = await fsp.stat(pdfPath);
-    const digest = await sha256(pdfPath);
-    const relativePath = path.relative(docsDir, pdfPath);
+  for (const filePath of files) {
+    const stat = await fsp.stat(filePath);
+    const digest = await sha256(filePath);
+    const relativePath = path.relative(docsDir, filePath);
     const existing = documents.get(digest);
     if (!existing) changed += 1;
+    
+    const ext = path.extname(filePath).toLowerCase();
+    const type = ext === ".tex" ? "tex" : "pdf";
+
     documents.set(digest, {
       id: documents.size + 1,
-      fileName: path.basename(pdfPath),
+      fileName: path.basename(filePath),
       relativePath,
-      absolutePath: pdfPath,
+      absolutePath: filePath,
       sha256: digest,
       sizeBytes: stat.size,
-      title: inferTitle(pdfPath),
-      snippet: `Indexed local PDF: ${relativePath}`,
+      title: inferTitle(filePath),
+      snippet: `Indexed local ${type.toUpperCase()}: ${relativePath}`,
       indexedAt: existing?.indexedAt || new Date(),
+      type,
     });
   }
 
   return {
-    scanned: pdfs.length,
+    scanned: files.length,
     indexed: documents.size,
     changed,
     docsDir,
@@ -161,7 +171,7 @@ export async function askLocalAgent(question: string) {
 
   const matches = searchDocuments(query).slice(0, 6);
   const context = matches.map((doc, index) => {
-    return `${index + 1}. ${doc.title} (${doc.relativePath}, ${doc.sizeBytes} bytes, sha256 ${doc.sha256})`;
+    return `${index + 1}. ${doc.title} (${doc.relativePath}, ${doc.sizeBytes} bytes, sha256 ${doc.sha256}, type ${doc.type})`;
   }).join("\n");
 
   if (env.enableLocalLlm && matches.length > 0) {
@@ -203,7 +213,7 @@ export async function askLocalAgent(question: string) {
 
   if (matches.length === 0) {
     return {
-      answer: `I did not find indexed local PDFs matching "${query}". Run a scan, then try a filename, acronym, topic, standard number, or report title from the local docs folder.`,
+      answer: `I did not find indexed local documents matching "${query}". Run a scan, then try a filename, acronym, topic, standard number, or report title from the local docs folder.`,
       mode: "local-search",
       matches,
     };
@@ -221,6 +231,71 @@ export async function askLocalAgent(question: string) {
   };
 }
 
+/**
+ * Perform deep analysis on a specific document's content.
+ */
+export async function deepAskAboutDocument(sha256: string, question: string) {
+  if (documents.size === 0) {
+    await scanDocuments().catch(() => undefined);
+  }
+
+  const doc = Array.from(documents.values()).find((d) => d.sha256 === sha256);
+  if (!doc) throw new Error("Document not found");
+  if (doc.type !== "pdf") throw new Error("Deep analysis is only supported for PDF documents");
+
+  try {
+    const text = await extractPDFText(doc.absolutePath);
+    const analysis = await analyzePDFContentWithLLM(text, question, `Document: ${doc.title}`);
+
+    return {
+      question,
+      answer: analysis.answer,
+      document: doc,
+      confidence: analysis.confidence,
+      relatedSections: analysis.relatedSections,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`Deep analysis failed: ${message}`);
+  }
+}
+
+/**
+ * Get PDF buffer for downloading
+ */
+export async function getPdfBuffer(pdfPath: string): Promise<Buffer> {
+  if (!fs.existsSync(pdfPath)) {
+    throw new Error(`PDF file not found: ${pdfPath}`);
+  }
+  return await fsp.readFile(pdfPath);
+}
+
+/**
+ * Get TeX buffer for downloading
+ */
+export async function getTexBuffer(texPath: string): Promise<Buffer> {
+  if (!fs.existsSync(texPath)) {
+    throw new Error(`TeX file not found: ${texPath}`);
+  }
+  return await fsp.readFile(texPath);
+}
+
+/**
+ * Save arbitrary LaTeX content to the docs directory for agent visibility
+ */
+export async function saveTexToDocsDir(content: string, filename: string): Promise<string> {
+  const docsDir = resolveDocsDir();
+  await fsp.mkdir(docsDir, { recursive: true });
+  
+  // Ensure the filename ends with .tex and has no illegal characters
+  const safeFilename = filename.replace(/[^a-z0-9_\-\.]/gi, '_');
+  const finalFilename = safeFilename.endsWith('.tex') ? safeFilename : `${safeFilename}.tex`;
+  const filePath = path.join(docsDir, finalFilename);
+  
+  await fsp.writeFile(filePath, content, "utf-8");
+  return filePath;
+}
+
 export async function generateTexReport(documentIds: string[], title: string) {
   const selected = listDocuments().filter((doc) => documentIds.includes(doc.sha256));
   if (selected.length === 0) {
@@ -229,10 +304,17 @@ export async function generateTexReport(documentIds: string[], title: string) {
 
   const outputDir = resolveOutputDir();
   await fsp.mkdir(outputDir, { recursive: true });
+  
+  // We also save a copy in DOCS_DIR so the agent can "see" and "re-index" it if needed
+  const docsDir = resolveDocsDir();
+
   const artifactId = crypto.randomUUID();
   const safeFile = `${artifactId}.tex`;
   const texPath = path.join(outputDir, safeFile);
   const reportTitle = title.trim() || "Local Research Agent Document Report";
+
+  // Also save to docs folder for agent visibility
+  const visibleTexPath = path.join(docsDir, `Report_${reportTitle.replace(/\s+/g, "_")}_${artifactId.substring(0, 8)}.tex`);
 
   const rows = selected.map((doc, index) => [
     `\\section*{${index + 1}. ${latexEscape(doc.title)}}`,
@@ -262,6 +344,7 @@ ${rows}
 `;
 
   await fsp.writeFile(texPath, tex, "utf-8");
+  await fsp.writeFile(visibleTexPath, tex, "utf-8"); // Visible to the agent
   const artifact: GeneratedArtifact = { id: artifactId, title: reportTitle, texPath, createdAt: new Date() };
   artifacts.set(artifactId, artifact);
   return artifact;
@@ -282,9 +365,67 @@ export async function compilePdf(artifactId: string) {
   }
 
   const pdfPath = artifact.texPath.replace(/\.tex$/i, ".pdf");
+  
+  // Also save a copy of the PDF to DOCS_DIR for agent visibility
+  try {
+    const docsDir = resolveDocsDir();
+    const visiblePdfPath = path.join(docsDir, path.basename(pdfPath));
+    await fsp.copyFile(pdfPath, visiblePdfPath);
+  } catch (err) {
+    console.warn("Failed to copy PDF to docs directory:", err);
+  }
+
   artifact.pdfPath = pdfPath;
   artifacts.set(artifactId, artifact);
   return artifact;
+}
+
+/**
+ * Compile a local .tex file from the index to PDF
+ */
+export async function compileLocalTex(sha256: string) {
+  const doc = Array.from(documents.values()).find((d) => d.sha256 === sha256);
+  if (!doc) throw new Error("Document not found");
+  if (doc.type !== "tex") throw new Error("Document is not a TeX file");
+
+  const outputDir = resolveOutputDir();
+  await fsp.mkdir(outputDir, { recursive: true });
+
+  try {
+    await execFileAsync("pdflatex", ["-interaction=nonstopmode", "-halt-on-error", `-output-directory=${outputDir}`, doc.absolutePath], {
+      timeout: 30000,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown pdflatex error";
+    throw new Error(`PDF compilation failed: ${message}`);
+  }
+
+  const pdfPath = path.join(outputDir, doc.fileName.replace(/\.tex$/i, ".pdf"));
+  
+  if (fs.existsSync(pdfPath)) {
+    // Also save a copy of the PDF to DOCS_DIR for agent visibility
+    try {
+      const docsDir = resolveDocsDir();
+      const visiblePdfPath = path.join(docsDir, path.basename(pdfPath));
+      await fsp.copyFile(pdfPath, visiblePdfPath);
+    } catch (err) {
+      console.warn("Failed to copy PDF to docs directory:", err);
+    }
+
+    // Create an artifact for it so it shows up in the artifacts list
+    const artifactId = crypto.randomUUID();
+    const artifact: GeneratedArtifact = {
+      id: artifactId,
+      title: `Compiled: ${doc.title}`,
+      texPath: doc.absolutePath,
+      pdfPath: pdfPath,
+      createdAt: new Date(),
+    };
+    artifacts.set(artifactId, artifact);
+    return artifact;
+  }
+
+  throw new Error("Compilation finished but PDF not found");
 }
 
 export function listArtifacts() {

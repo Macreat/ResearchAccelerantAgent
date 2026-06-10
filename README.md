@@ -2,7 +2,7 @@
 
 ## Research Accelerant Agent & Self-Hosted Hub
 
-_The **GCPDS Research Hub**, it is a high-performance development environment and AI-powered research assistant._
+_The **GCPDS Research Hub** is a high-performance development environment and AI-powered research assistant._
 
 This project transforms a standard server into a dedicated "Self-Hosted Research Hub" designed for autonomous literature review and automated deployment.
 
@@ -22,12 +22,8 @@ In professional research and DevSecOps, your local machine shouldn't be a bottle
 
 If you are connected to the **University Network** or **Tailscale**, you can access the hub directly:
 
-    - If you wanna connect via TAILSCALE, there are some features to update.
-
 | **CasaOS Dashboard** | [http://100.70.18.50/#/](http://100.70.18.50/#/) | [![Tailscale](https://img.shields.io/badge/Tailscale-Port_80-blue)](http://100.x.y.z:3000) | 
-
 | **Research Agent UI** | [http://100.70.18.50:3000/docs](http://100.70.18.50:3000/docs) | [![Tailscale](https://img.shields.io/badge/Tailscale-Port_3000-blue)](http://100.x.y.z:3000) |
-
 
 | Service | Local Link | Status |
 | :--- | :--- | :--- |
@@ -59,21 +55,122 @@ For work outside the lab or when University ports are blocked:
 
 ##  The Research Accelerant Agent (v0.2-1.0)
 
+The crown jewel of this hub is the **Research Accelerant Agent**, an AI-powered, full-stack academic literature review assistant. It orchestrates a pipeline of intelligent agents to automate the heavy lifting of academic research.
 
-The crown jewel of this hub is the **Research Accelerant Agent**, a full-stack academic assistant.
+### Core Pipeline & Capability
+| Version | Capability | Description |
+|---------|------------|-------------|
+| **V1 (MVP)** | **Search & Extraction** | Queries Semantic Scholar and OpenAlex. Parses metadata, abstracts, methodology, and key findings. |
+| **V2** | **Cross-Study Synthesis** | Identifies overarching themes, recurring gaps, and methodological patterns across studies. |
+| **V3** | **Problem Statement** | Crafts formal research gap statements with stakeholder analysis and consequences of inaction. |
+| **ALL** | **LaTeX Engine** | Compiles findings into publication-ready documents using professional templates and `pdflatex`. |
 
-### Core Pipeline
-1. **Search Agent:** Queries Semantic Scholar and OpenAlex for top-tier papers.
-2. **Extraction Agent:** Parses metadata and abstracts directly from local/remote sources.
-3. **Ollama Integration:** Uses local LLMs to "read" your PDFs and answer questions based on the actual content.
-4. **LaTeX Engine:** Compiles findings into publication-ready documents using professional `tcolorbox` templates.
+### Key Features
+- **Real-time Session Tracking:** Monitor progress from `pending` → `searching` → `extracting` → `synthesizing` → `drafting` → `completed`.
+- **Local Document Agent:** Index, review, and compile local PDFs and `.tex` reports directly from the hub's storage.
+- **Ollama Integration:** Uses local LLMs (Llama 3.1) to "read" your PDFs and answer questions based on the actual content.
+- **Human-in-the-loop:** Review, approve, or reject generated problem statements before export.
 
-### Service-Oriented Architecture
-The agent is moving from a prototype to a **Global Linux Service**. Once onboarded, you can manage it from any terminal:
+---
+
+## Tech Stack & Architecture
+
+The application is built as a modern, type-safe monolith designed for high performance and developer productivity.
+
+### Core Tech Stack
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui |
+| **Backend** | Hono (Node.js), tRPC v11, SuperJSON |
+| **Database** | MySQL/Postgres with Drizzle ORM |
+| **AI** | Ollama (Llama 3.1) + NVIDIA Container Toolkit |
+| **OS** | Ubuntu Server 24.04 LTS + CasaOS Dashboard |
+
+### System Architecture
+```
+┌─────────────────┐
+│   React SPA     │  (Vite, React Router, Tailwind, shadcn/ui)
+│   src/pages/    │
+└────────┬────────┘
+         │ tRPC over HTTP (/api/trpc)
+         ▼
+┌─────────────────┐
+│   Hono Server   │  (Node.js HTTP framework)
+│   api/boot.ts   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────┐
+│  tRPC Router (api/router.ts)                │
+│  ├── search      → academic-search.ts       │
+│  ├── synthesis   → synthesis-engine.ts      │
+│  ├── statement   → problem statement gen    │
+│  ├── latex       → latex-generator.ts       │
+│  └── docs        → local-docs.ts            │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Database Schema
+
+The schema (managed by Drizzle ORM) centers on five core entities that manage the research lifecycle:
+
+| Table | Purpose |
+|-------|---------|
+| `search_sessions` | Core entity for each literature review request (topic, filters, status, version). |
+| `papers` | Individual papers retrieved from academic APIs (metadata, abstracts, findings, methodology). |
+| `synthesis_results` | Cross-study synthesis and gap analysis output (V2). |
+| `problem_statements` | Final problem statement with optional human feedback and LaTeX output (V3). |
+| `latex_outputs` | Generated LaTeX documents and compiled PDF URLs. |
+
+---
+
+## Service Management
+
+The agent is implemented as a **Global Linux Service**. You can manage it from any terminal via the `gcpds` CLI:
+
 ```bash
 gcpds agent start      # Starts the API and Web UI
+gcpds agent stop       # Stops the service
 gcpds dashboard        # Provides the local/remote URL for the GUI
 ```
+
+---
+
+## Getting Started (Local Setup Guide)
+
+Follow these steps to deploy the Research Hub and Agent on your local server or development machine.
+
+### 1. Prerequisites
+- **Node.js** 20+ (LTS recommended)
+- **MySQL/Postgres** database
+- **Ollama** installed (for local LLM features)
+- **pdflatex** (for PDF compilation)
+
+### 2. Installation
+```bash
+# Clone the repository
+git clone https://github.com/Macreat/ResearchAccelerantAgent.git
+cd ResearchAccelerantAgent/app
+
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your DATABASE_URL and API keys
+```
+
+### 3. Database & Services
+```bash
+# Push the schema to your database
+npm run db:push
+
+# Start the development environment (Unified HMR)
+npm run dev
+```
+The application will be available at `http://localhost:3000`.
 
 ---
 
@@ -82,20 +179,27 @@ gcpds dashboard        # Provides the local/remote URL for the GUI
 To transition from a personal lab to a collaborative research environment, we are implementing:
 
 ### GitHub Actions (Self-Hosted)
-- **Automated Testing:** Every push to the repo triggers the server to run `vitest` and `eslint` to ensure the Agent stays stable.
-- **CI/CD Pipelines:** Automatic deployment of new Agent versions to the local Docker or Systemd environment.
-- **Collaborative Runners:** The server acts as a dedicated worker for GCPDS GitHub repositories, accelerating the group's overall development speed.
+- **Automated Testing:** Every push triggers `vitest` and `eslint` on the server to ensure stability.
+- **CI/CD Pipelines:** Automatic deployment of new Agent versions to Docker or Systemd environments.
+- **Collaborative Runners:** Dedicated workers for GCPDS repositories, accelerating group development speed.
 
 ---
 
-## Tech Stack Highlights
-- **Backend:** Hono, tRPC v11, Node.js.
-- **Frontend:** React 19, Tailwind CSS, shadcn/ui.
-- **Database:** MySQL/Postgres with Drizzle ORM.
-- **AI:** Ollama (Llama 3.1) + NVIDIA Container Toolkit.
-- **OS:** Ubuntu Server 24.04 LTS + CasaOS Dashboard.
+## Project Structure
 
-_given us this final prototype as v0.2_ 
+```
+ResearchAccelerantAgent/
+├── app/                          # Full-stack web application
+│   ├── src/                      # React frontend (pages, components, providers)
+│   ├── api/                      # Hono + tRPC backend (routers, services, boot)
+│   ├── db/                       # Database layer (schema, migrations)
+│   └── contracts/                # Shared types (frontend ↔ backend)
+└── content/                      # Media and infrastructure diagrams
+```
+
+---
+
+_Project maintainted by the GCPDS Team. v0.2-1.0 Prototype Stable._
 
 ![final](content/infrastructure.png)
 ---

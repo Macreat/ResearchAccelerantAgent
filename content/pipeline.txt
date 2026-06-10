@@ -1,0 +1,3 @@
+machine learning for  interruption 
+
+  Aviation VHF Monitoring, RF Spectral Awareness , SDR, raspberrypi 

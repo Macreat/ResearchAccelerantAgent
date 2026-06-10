@@ -6,13 +6,22 @@ import {
   generateSynthesisLaTeX,
   generateProblemStatementLaTeX,
   generateFullPipelineLaTeX,
+  generateMethodologicalReportLaTeX,
+  generateArchitectureReportLaTeX,
 } from "../services/latex-generator";
+import {
+  compileLaTeXToPDF,
+  getDefaultPDFConfig,
+  listGeneratedPDFs,
+  ensureOutputDirectories,
+} from "../services/latex-to-pdf";
+import { saveTexToDocsDir } from "../services/local-docs";
 import type { PaperMetadata, SynthesisData, ProblemStatementData } from "../services/latex-generator";
 
 export const latexRouter = createRouter({
   generateReview: publicQuery
     .input(z.object({ sessionId: z.number() }))
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       const session = memoryStore.getSession(input.sessionId);
       if (!session) throw new Error("Session not found");
 
@@ -53,12 +62,15 @@ export const latexRouter = createRouter({
         compiledPdfUrl: null,
       });
 
+      // Persist to document index
+      await saveTexToDocsDir(latex, `LiteratureReview_${input.sessionId}_${Date.now()}.tex`);
+
       return { latex, sessionId: input.sessionId };
     }),
 
   generateSynthesis: publicQuery
     .input(z.object({ sessionId: z.number() }))
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       const session = memoryStore.getSession(input.sessionId);
       if (!session) throw new Error("Session not found");
 
@@ -107,6 +119,9 @@ export const latexRouter = createRouter({
         latexContent: latex,
         compiledPdfUrl: null,
       });
+
+      // Persist to document index
+      await saveTexToDocsDir(latex, `Synthesis_${input.sessionId}_${Date.now()}.tex`);
 
       return { latex, sessionId: input.sessionId };
     }),
@@ -169,12 +184,15 @@ export const latexRouter = createRouter({
         compiledPdfUrl: null,
       });
 
+      // Persist to document index
+      await saveTexToDocsDir(latex, `ProblemStatement_${input.sessionId}_${Date.now()}.tex`);
+
       return { latex, sessionId: input.sessionId };
     }),
 
   generateFullPipeline: publicQuery
     .input(z.object({ sessionId: z.number() }))
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       const session = memoryStore.getSession(input.sessionId);
       if (!session) throw new Error("Session not found");
 
@@ -250,6 +268,9 @@ export const latexRouter = createRouter({
         compiledPdfUrl: null,
       });
 
+      // Persist to document index
+      await saveTexToDocsDir(latex, `FullPipeline_${input.sessionId}_${Date.now()}.tex`);
+
       return { latex, sessionId: input.sessionId };
     }),
 
@@ -257,5 +278,195 @@ export const latexRouter = createRouter({
     .input(z.object({ sessionId: z.number() }))
     .query(({ input }) => {
       return memoryStore.getLatexOutputsForSession(input.sessionId);
+    }),
+
+  // ========================================================================
+  // PDF Generation Endpoints
+  // ========================================================================
+  compileToPDF: publicQuery
+    .input(
+      z.object({
+        sessionId: z.number(),
+        documentType: z.enum(["literature_review", "synthesis", "problem_statement", "full_pipeline"]),
+        outputFileName: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const session = memoryStore.getSession(input.sessionId);
+      if (!session) throw new Error("Session not found");
+
+      const config = getDefaultPDFConfig();
+      ensureOutputDirectories(config);
+
+      // Get LaTeX content
+      const latexOutput = memoryStore.getLatexOutputsForSession(input.sessionId).find(
+        (o) => o.documentType === input.documentType
+      );
+
+      if (!latexOutput || !latexOutput.latexContent) {
+        throw new Error(`No LaTeX generated for ${input.documentType}`);
+      }
+
+      // Write LaTeX to temporary file
+      const fs = await import("fs");
+      const path = await import("path");
+      const tempTexFile = path.join(config.tempDir, `${input.documentType}_${input.sessionId}.tex`);
+
+      fs.writeFileSync(tempTexFile, latexOutput.latexContent, "utf-8");
+
+      // Compile to PDF
+      const result = await compileLaTeXToPDF(
+        tempTexFile,
+        input.outputFileName || `${input.documentType}_${input.sessionId}.pdf`,
+        config
+      );
+
+      if (!result.success) {
+        throw new Error(`PDF compilation failed: ${result.error}`);
+      }
+
+      // Update memory store
+      memoryStore.createLatexOutput({
+        sessionId: input.sessionId,
+        documentType: input.documentType,
+        latexContent: latexOutput.latexContent,
+        compiledPdfUrl: result.pdfFilePath || null,
+      });
+
+      return {
+        success: true,
+        pdfPath: result.pdfFilePath,
+        fileSize: result.fileSize,
+        compilationTime: result.compilationTime,
+        message: result.message,
+      };
+    }),
+
+  // ========================================================================
+  // List Generated PDFs
+  // ========================================================================
+  listGeneratedPDFs: publicQuery.query(() => {
+    const config = getDefaultPDFConfig();
+    ensureOutputDirectories(config);
+    return listGeneratedPDFs(config);
+  }),
+
+  // ========================================================================
+  // Generate Methodological Report
+  // ========================================================================
+  generateMethodologicalReport: publicQuery
+    .input(z.object({ sessionId: z.number() }))
+    .mutation(async ({ input }) => {
+      const session = memoryStore.getSession(input.sessionId);
+      if (!session) throw new Error("Session not found");
+
+      const sessionPapers = memoryStore.getPapersForSession(input.sessionId);
+      const synResult = memoryStore.getSynthesisForSession(input.sessionId);
+
+      if (!synResult) throw new Error("No synthesis found. Run synthesis first.");
+
+      const paperMetadata: PaperMetadata[] = sessionPapers.map((p) => ({
+        externalId: p.externalId,
+        source: p.source,
+        title: p.title,
+        authors: p.authors ? JSON.parse(p.authors as string) : [],
+        year: p.year || 0,
+        journal: p.journal || undefined,
+        volume: p.volume || undefined,
+        issue: p.issue || undefined,
+        pages: p.pages || undefined,
+        doi: p.doi || undefined,
+        url: p.url || "",
+        abstract: p.abstract || undefined,
+        citationCount: p.citationCount || 0,
+        citationCountSource: p.citationCountSource || "",
+        pdfUrl: p.pdfUrl || undefined,
+        relevanceScore: p.relevanceScore || 0,
+      }));
+
+      const synthesis: SynthesisData = {
+        methodologicalPatterns: synResult.methodologicalPatterns || "",
+        overarchingFindings: synResult.overarchingFindings || "",
+        recurringGaps: synResult.recurringGaps || "",
+        impactAssessment: synResult.impactAssessment || "",
+        futureDirections: synResult.futureDirections || "",
+        identifiedGaps: (synResult.identifiedGaps as string[]) || [],
+      };
+
+      const latex = generateMethodologicalReportLaTeX(session.topic, synthesis, paperMetadata);
+
+      memoryStore.createLatexOutput({
+        sessionId: input.sessionId,
+        documentType: "methodological_report",
+        latexContent: latex,
+        compiledPdfUrl: null,
+      });
+
+      // Persist to document index
+      await saveTexToDocsDir(latex, `MethodologicalReport_${input.sessionId}_${Date.now()}.tex`);
+
+      return { latex, sessionId: input.sessionId };
+    }),
+
+  // ========================================================================
+  // Generate Architecture Report
+  // ========================================================================
+  generateArchitectureReport: publicQuery
+    .input(
+      z.object({
+        sessionId: z.number(),
+        systemName: z.string(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const session = memoryStore.getSession(input.sessionId);
+      if (!session) throw new Error("Session not found");
+
+      const sessionPapers = memoryStore.getPapersForSession(input.sessionId);
+      const synResult = memoryStore.getSynthesisForSession(input.sessionId);
+
+      if (!synResult) throw new Error("No synthesis found. Run synthesis first.");
+
+      const paperMetadata: PaperMetadata[] = sessionPapers.map((p) => ({
+        externalId: p.externalId,
+        source: p.source,
+        title: p.title,
+        authors: p.authors ? JSON.parse(p.authors as string) : [],
+        year: p.year || 0,
+        journal: p.journal || undefined,
+        volume: p.volume || undefined,
+        issue: p.issue || undefined,
+        pages: p.pages || undefined,
+        doi: p.doi || undefined,
+        url: p.url || "",
+        abstract: p.abstract || undefined,
+        citationCount: p.citationCount || 0,
+        citationCountSource: p.citationCountSource || "",
+        pdfUrl: p.pdfUrl || undefined,
+        relevanceScore: p.relevanceScore || 0,
+      }));
+
+      const synthesis: SynthesisData = {
+        methodologicalPatterns: synResult.methodologicalPatterns || "",
+        overarchingFindings: synResult.overarchingFindings || "",
+        recurringGaps: synResult.recurringGaps || "",
+        impactAssessment: synResult.impactAssessment || "",
+        futureDirections: synResult.futureDirections || "",
+        identifiedGaps: (synResult.identifiedGaps as string[]) || [],
+      };
+
+      const latex = generateArchitectureReportLaTeX(input.systemName, paperMetadata, synthesis);
+
+      memoryStore.createLatexOutput({
+        sessionId: input.sessionId,
+        documentType: "architecture_report",
+        latexContent: latex,
+        compiledPdfUrl: null,
+      });
+
+      // Persist to document index
+      await saveTexToDocsDir(latex, `ArchitectureReport_${input.systemName}_${input.sessionId}_${Date.now()}.tex`);
+
+      return { latex, sessionId: input.sessionId };
     }),
 });

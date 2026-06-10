@@ -163,7 +163,7 @@ export default function Session() {
           </div>
         </div>
         <div className="flex gap-2">
-          {session.status === 'completed' && (
+          {latexContent && (
             <Button
               variant="outline"
               onClick={() => {
@@ -174,7 +174,6 @@ export default function Session() {
                 a.download = `research-review-${sessionId}.tex`
                 a.click()
               }}
-              disabled={!latexContent}
             >
               <Download className="w-4 h-4 mr-2" />
               Download .tex

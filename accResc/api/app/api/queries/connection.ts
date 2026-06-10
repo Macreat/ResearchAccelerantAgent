@@ -1,5 +1,5 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
 import { env } from "../lib/env";
 import * as schema from "@db/schema";
 import * as relations from "@db/relations";
@@ -7,13 +7,13 @@ import * as relations from "@db/relations";
 const fullSchema = { ...schema, ...relations };
 
 let instance: ReturnType<typeof drizzle<typeof fullSchema>>;
-let client: postgres.Sql | undefined;
+let sqlite: any | undefined;
 
 export function getDb() {
   if (!instance) {
-    const dbUrl = env.databaseUrl || "postgres://research:research@localhost:5432/research_agent";
-    client = postgres(dbUrl, { max: 10 });
-    instance = drizzle(client, {
+    const dbPath = env.sqliteDbPath || "./db/research.db";
+    sqlite = new Database(dbPath);
+    instance = drizzle(sqlite, {
       schema: fullSchema,
     });
   }
@@ -21,8 +21,8 @@ export function getDb() {
 }
 
 export async function closeDb() {
-  if (client) {
-    await client.end();
-    client = undefined;
+  if (sqlite) {
+    sqlite.close();
+    sqlite = undefined;
   }
 }

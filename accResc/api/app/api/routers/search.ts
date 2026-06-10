@@ -15,7 +15,7 @@ export const searchRouter = createRouter({
         yearFrom: z.number().min(1900).max(2100).default(2020),
         yearTo: z.number().min(1900).max(2100).default(2026),
         citationMin: z.number().min(0).default(1),
-        databases: z.string().default("semantic_scholar,openalex"),
+        databases: z.string().default("google_scholar,semantic_scholar,openalex"),
         keywords: z.string().optional(),
         inclusionCriteria: z.string().optional(),
         exclusionCriteria: z.string().optional(),
@@ -144,4 +144,146 @@ export const searchRouter = createRouter({
       memoryStore.deleteSession(input.sessionId);
       return { success: true };
     }),
+
+  // ========================================================================
+  // Advanced Search: Hybrid local + external with smart ranking
+  // ========================================================================
+  advancedSearch: publicQuery
+    .input(
+      z.object({
+        topic: z.string().min(1).max(500),
+        keywords: z.array(z.string()).min(1).max(20),
+        yearFrom: z.number().min(1900).max(2100).default(2018),
+        yearTo: z.number().min(1900).max(2100).default(2026),
+        citationMin: z.number().min(0).default(0),
+        bibFormat: z.enum(["APA", "IEEE", "MLA", "BibTeX"]).default("APA"),
+        searchStrategy: z.enum(["local", "hybrid", "external"]).default("hybrid"),
+        returnCount: z.number().min(1).max(20).default(5),
+        includeLocalDocs: z.boolean().default(true),
+        includeExternalAPIs: z.boolean().default(true),
+      })
+    )
+    .mutation(async ({ input }) => {
+      try {
+        const { performAdvancedSearch } = await import("../services/advanced-research-pipeline");
+        const result = await performAdvancedSearch(input);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        throw new Error(`Advanced search failed: ${message}`);
+      }
+    }),
+
+  // ========================================================================
+  // Generate Bibliography from papers
+  // ========================================================================
+  generateBibliography: publicQuery
+    .input(
+      z.object({
+        papers: z.array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            authors: z.array(z.string()),
+            year: z.number(),
+            abstract: z.string(),
+            journal: z.string().optional(),
+            url: z.string(),
+            citations: z.number(),
+            source: z.enum(["local", "semantic_scholar", "google_scholar", "openalex"]),
+            relevanceScore: z.number(),
+            keywordMatches: z.array(z.string()),
+          })
+        ),
+        bibFormat: z.enum(["APA", "IEEE", "MLA", "BibTeX"]).default("APA"),
+      })
+    )
+    .query(({ input }) => {
+      const { generateBibliography } = require("../services/advanced-research-pipeline");
+      const bibliography = generateBibliography(
+        input.papers as any,
+        input.bibFormat
+      );
+      return { bibliography, format: input.bibFormat, count: input.papers.length };
+    }),
+
+  // ========================================================================
+  // Semantic search on local documents only
+  // ========================================================================
+  semanticSearchLocal: publicQuery
+    .input(
+      z.object({
+        query: z.string().min(1),
+        keywords: z.array(z.string()).min(1).max(10),
+        returnCount: z.number().min(1).max(10).default(5),
+      })
+    )
+    .query(async ({ input }) => {
+      try {
+        const { searchLocalDocuments } = await import("../services/advanced-research-pipeline");
+        const papers = await searchLocalDocuments({
+          topic: input.query,
+          keywords: input.keywords,
+          yearFrom: 2000,
+          yearTo: 2026,
+          citationMin: 0,
+          bibFormat: "APA",
+          searchStrategy: "local",
+          returnCount: input.returnCount,
+          includeLocalDocs: true,
+          includeExternalAPIs: false,
+        });
+        return {
+          query: input.query,
+          papersFound: papers.length,
+          papers,
+          duration: 0,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        throw new Error(`Local semantic search failed: ${message}`);
+      }
+    }),
+
+  // ========================================================================
+  // Keyword expansion for niche topics
+  // ========================================================================
+  expandKeywords: publicQuery
+    .input(
+      z.object({
+        topic: z.string().min(1),
+        keywords: z.array(z.string()).min(1).max(10),
+      })
+    )
+    .query(async ({ input }) => {
+      try {
+        const { expandKeywords } = await import("../services/advanced-research-pipeline");
+        const expanded = await expandKeywords(input.topic, input.keywords);
+        return {
+          original: input.keywords,
+          expanded,
+          newCount: expanded.length - input.keywords.length,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        throw new Error(`Keyword expansion failed: ${message}`);
+      }
+    }),
+
+  // ========================================================================
+  // VHF Monitoring specialized pipeline
+  // ========================================================================
+  vhfMonitoringSearch: publicQuery.query(async () => {
+    try {
+      const { createVHFMonitoringPipeline, executeHybridSearch } = await import(
+        "../services/advanced-research-pipeline"
+      );
+      const query = await createVHFMonitoringPipeline();
+      const result = await executeHybridSearch(query);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`VHF monitoring search failed: ${message}`);
+    }
+  }),
 });
